@@ -1,0 +1,12 @@
+# Lean council for a one-person company: focus, demand, distribution, money, risk.
+# Tuned for a solo founder's real failure modes, not big-company org design.
+# Copied into .council/council.yaml by `/council convene solo-founder`.
+name: solo-founder
+description: Lean council for a one-person company
+chair: founder-operator
+seats: [founder-operator, customer-advocate, growth-marketer, product-manager, cfo, legal-risk-advisor]
+work_budget:
+  max_turns: 10          # hard cap on spawned seat turns in `work` (chair routing/adjudication is inline, uncounted)
+  scratch_max_bytes: 200000  # hard stop trigger: halt `work` if the scratchpad grows past this
+memory_budget:
+  manifest_max_bytes: 8000   # cap on the memory manifest injected into each spawn; unset/0 = uncapped

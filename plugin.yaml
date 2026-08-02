@@ -1,0 +1,14 @@
+name: council
+version: 0.1.0
+description: >
+  Multi-perspective deliberation engine for Hermes. Convene named seats,
+  run interactive meetings or autonomous work sessions, preserve dissent
+  in an auditable .council/ record.
+author: fingerskier
+manifest_version: 1
+provides_tools:
+  - council
+provides_commands:
+  - council
+provides_skills:
+  - council

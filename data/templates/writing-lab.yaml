@@ -1,0 +1,11 @@
+# Draft, critique, and tighten prose.
+# Copied into .council/council.yaml by `/council convene writing-lab`.
+name: writing-lab
+description: Draft, critique, and tighten prose
+chair: editor
+seats: [editor, line-editor, critic, researcher]
+work_budget:
+  max_turns: 10          # hard cap on spawned seat turns in `work` (chair routing/adjudication is inline, uncounted)
+  scratch_max_bytes: 200000  # hard stop trigger: halt `work` if the scratchpad grows past this
+memory_budget:
+  manifest_max_bytes: 8000   # cap on the memory manifest injected into each spawn; unset/0 = uncapped

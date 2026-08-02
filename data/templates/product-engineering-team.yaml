@@ -1,0 +1,13 @@
+# Cross-disciplinary council for designing and shipping a physical product.
+# Mechanical, electrical, firmware, application, and infrastructure engineers
+# under an engineering manager who chairs.
+# Copied into .council/council.yaml by `/council convene product-engineering-team`.
+name: product-engineering-team
+description: Cross-disciplinary hardware/firmware/software product council
+chair: engineering-manager
+seats: [engineering-manager, mechanical-engineer, electrical-engineer, firmware-engineer, application-engineer, infrastructure-engineer]
+work_budget:
+  max_turns: 14          # hard cap on spawned seat turns in `work` (chair routing/adjudication is inline, uncounted)
+  scratch_max_bytes: 250000  # hard stop trigger: halt `work` if the scratchpad grows past this
+memory_budget:
+  manifest_max_bytes: 8000   # cap on the memory manifest injected into each spawn; unset/0 = uncapped
