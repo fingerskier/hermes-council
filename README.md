@@ -30,7 +30,7 @@ ln -sfn ~/fingerskier/hermes-council ~/.hermes/profiles/fingerskier/plugins/coun
 hermes plugins enable council
 ```
 
-Requires **PyYAML** in the Hermes environment (`pip install pyyaml` into Hermes' venv if missing).
+Requires nothing beyond Hermes itself (PyYAML is used when present; a small built-in YAML subset covers bundled templates otherwise).
 
 ## Quick start
 
