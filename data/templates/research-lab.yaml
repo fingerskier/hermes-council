@@ -1,0 +1,21 @@
+# Pure research council — maths, computing, architecture, controls, methodology.
+# Copied into .council/council.yaml by `/council convene research-lab`.
+name: research-lab
+description: >-
+  Pure research council for mathematics, computing, systems architecture,
+  controls, and rigorous methodology. Favors definitions, proofs of concept,
+  assumptions, and open questions over shipping product.
+chair: principal-investigator
+seats:
+  - principal-investigator
+  - mathematician
+  - computer-scientist
+  - systems-architect
+  - controls-engineer
+  - research-methodologist
+  - critic
+work_budget:
+  max_turns: 14          # hard cap on spawned seat turns in `work` (chair routing/adjudication is inline, uncounted)
+  scratch_max_bytes: 250000  # hard stop trigger: halt `work` if the scratchpad grows past this
+memory_budget:
+  manifest_max_bytes: 10000  # cap on the memory manifest injected into each spawn; unset/0 = uncapped

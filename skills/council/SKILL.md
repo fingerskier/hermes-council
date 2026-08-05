@@ -47,4 +47,4 @@ the protocol — you call actions; you do **not** voice every seat yourself.
 ## Templates bundled
 
 software-team (default), product-engineering-team, c-suite, solo-founder,
-writing-lab, hedge-fund-team.
+writing-lab, hedge-fund-team, research-lab (maths / computing / architecture / controls).

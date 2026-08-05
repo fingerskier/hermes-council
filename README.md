@@ -112,6 +112,7 @@ skills/council/SKILL.md   # thin agent guidance
 - `solo-founder`
 - `writing-lab`
 - `hedge-fund-team`
+- `research-lab` — pure research (maths, computing, architecture, controls, methodology)
 
 Add a seat: drop markdown in `data/personalities/` (or `.council/seats/` after convene) and list it in the template / `council.yaml`.
 
