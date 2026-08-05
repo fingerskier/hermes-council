@@ -7,13 +7,14 @@ tool share one protocol.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
 import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -26,6 +27,32 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 _PKG = "hermes_council_plugin_api"
 _lock = threading.Lock()
 _busy: Dict[str, str] = {}  # session_id -> action
+
+
+async def _to_thread(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Run blocking engine/LLM work off the FastAPI event loop.
+
+    Seat LLM calls are synchronous httpx/openai. Running them inside
+    ``async def`` stalls the dashboard loop, closes shared clients mid-stream
+    (\"Cannot send a request, as the client has been closed\" / incomplete
+    chunked read), and surfaces as \"Connection error.\" for every seat.
+    """
+    return await asyncio.to_thread(lambda: fn(*args, **kwargs))
+
+
+def _claim_busy(sid: str, action: str) -> None:
+    with _lock:
+        if sid in _busy:
+            raise HTTPException(
+                status_code=409,
+                detail=f"session busy with {_busy[sid]}",
+            )
+        _busy[sid] = action
+
+
+def _release_busy(sid: str) -> None:
+    with _lock:
+        _busy.pop(sid, None)
 
 
 def _ensure_pkg() -> None:
@@ -314,7 +341,12 @@ async def convene(body: ConveneBody):
 async def meeting_start(body: MeetingStartBody):
     try:
         r = _resolve_root(body.root)
-        return _engine_session().meeting_start(r, body.task.strip(), ctx=_llm_ctx())
+        return await _to_thread(
+            _engine_session().meeting_start,
+            r,
+            body.task.strip(),
+            ctx=_llm_ctx(),
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -325,92 +357,90 @@ async def meeting_start(body: MeetingStartBody):
 @router.post("/meeting/round")
 async def meeting_round(body: MeetingRoundBody):
     sid = body.session_id.strip()
-    with _lock:
-        if sid in _busy:
-            raise HTTPException(
-                status_code=409,
-                detail=f"session busy with {_busy[sid]}",
-            )
-        _busy[sid] = "meeting_round"
+    _claim_busy(sid, "meeting_round")
     try:
         r = _resolve_root(body.root)
-        result = _engine_session().meeting_round(
-            r,
-            sid,
-            ctx=_llm_ctx(),
-            user_steer=body.user_steer or "",
-        )
-        # Attach fresh snapshot so the UI can paint in one round-trip
-        try:
-            result["snapshot"] = _engine_view().build_snapshot(r, sid)
-        except Exception:
-            pass
-        return result
+
+        def _run():
+            result = _engine_session().meeting_round(
+                r,
+                sid,
+                ctx=_llm_ctx(),
+                user_steer=body.user_steer or "",
+            )
+            try:
+                result["snapshot"] = _engine_view().build_snapshot(r, sid)
+            except Exception:
+                pass
+            return result
+
+        return await _to_thread(_run)
     except HTTPException:
         raise
     except Exception as exc:
         log.exception("meeting_round failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
-        with _lock:
-            _busy.pop(sid, None)
+        _release_busy(sid)
 
 
 @router.post("/meeting/conclude")
 async def meeting_conclude(body: MeetingConcludeBody):
     sid = body.session_id.strip()
-    with _lock:
-        if sid in _busy:
-            raise HTTPException(
-                status_code=409,
-                detail=f"session busy with {_busy[sid]}",
-            )
-        _busy[sid] = "meeting_conclude"
+    _claim_busy(sid, "meeting_conclude")
     try:
         r = _resolve_root(body.root)
-        result = _engine_session().conclude_meeting(r, sid, ctx=_llm_ctx())
-        try:
-            result["snapshot"] = _engine_view().build_snapshot(r, sid)
-        except Exception:
-            pass
-        return result
+
+        def _run():
+            result = _engine_session().conclude_meeting(r, sid, ctx=_llm_ctx())
+            try:
+                result["snapshot"] = _engine_view().build_snapshot(r, sid)
+            except Exception:
+                pass
+            return result
+
+        return await _to_thread(_run)
     except HTTPException:
         raise
     except Exception as exc:
         log.exception("meeting_conclude failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
-        with _lock:
-            _busy.pop(sid, None)
+        _release_busy(sid)
 
 
 @router.post("/session/cancel")
 async def session_cancel(body: SessionActionBody):
     sid = body.session_id.strip()
-    with _lock:
-        if sid in _busy:
-            raise HTTPException(status_code=409, detail=f"session busy with {_busy[sid]}")
-        _busy[sid] = "session_cancel"
+    _claim_busy(sid, "session_cancel")
     try:
         r = _resolve_root(body.root)
-        result = _engine_session().cancel_session(r, sid)
-        result["snapshot"] = _engine_view().build_snapshot(r, sid)
-        return result
+
+        def _run():
+            result = _engine_session().cancel_session(r, sid)
+            result["snapshot"] = _engine_view().build_snapshot(r, sid)
+            return result
+
+        return await _to_thread(_run)
     except HTTPException:
         raise
     except Exception as exc:
         log.exception("session_cancel failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
-        with _lock:
-            _busy.pop(sid, None)
+        _release_busy(sid)
 
 
 @router.post("/work/start")
 async def work_start(body: MeetingStartBody):
     try:
         r = _resolve_root(body.root)
-        return _engine_session().work_start(r, body.task.strip(), ctx=_llm_ctx())
+        return await _to_thread(
+            _engine_session().work_start,
+            r,
+            body.task.strip(),
+            ctx=_llm_ctx(),
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -421,47 +451,47 @@ async def work_start(body: MeetingStartBody):
 @router.post("/work/tick")
 async def work_tick(body: SessionActionBody):
     sid = body.session_id.strip()
-    with _lock:
-        if sid in _busy:
-            raise HTTPException(status_code=409, detail=f"session busy with {_busy[sid]}")
-        _busy[sid] = "work_tick"
+    _claim_busy(sid, "work_tick")
     try:
         r = _resolve_root(body.root)
-        result = _engine_session().work_tick(r, sid, ctx=_llm_ctx())
-        result["snapshot"] = _engine_view().build_snapshot(r, sid)
-        return result
+
+        def _run():
+            result = _engine_session().work_tick(r, sid, ctx=_llm_ctx())
+            result["snapshot"] = _engine_view().build_snapshot(r, sid)
+            return result
+
+        return await _to_thread(_run)
     except HTTPException:
         raise
     except Exception as exc:
         log.exception("work_tick failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
-        with _lock:
-            _busy.pop(sid, None)
+        _release_busy(sid)
 
 
 @router.post("/work/conclude")
 async def work_conclude(body: SessionActionBody):
     sid = body.session_id.strip()
-    with _lock:
-        if sid in _busy:
-            raise HTTPException(status_code=409, detail=f"session busy with {_busy[sid]}")
-        _busy[sid] = "work_conclude"
+    _claim_busy(sid, "work_conclude")
     try:
         r = _resolve_root(body.root)
-        result = _engine_session().work_stop(
-            r,
-            sid,
-            ctx=_llm_ctx(),
-            reason="user_concluded",
-        )
-        result["snapshot"] = _engine_view().build_snapshot(r, sid)
-        return result
+
+        def _run():
+            result = _engine_session().work_stop(
+                r,
+                sid,
+                ctx=_llm_ctx(),
+                reason="user_concluded",
+            )
+            result["snapshot"] = _engine_view().build_snapshot(r, sid)
+            return result
+
+        return await _to_thread(_run)
     except HTTPException:
         raise
     except Exception as exc:
         log.exception("work_conclude failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
-        with _lock:
-            _busy.pop(sid, None)
+        _release_busy(sid)

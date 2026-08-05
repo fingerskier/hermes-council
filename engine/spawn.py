@@ -238,6 +238,7 @@ def speak_as_seat(
             attempts.append((None, None))
         last_exc: Optional[BaseException] = None
         # One transient retry after brief backoff (rate limits between seats).
+        # Prefer a slightly longer backoff after incomplete stream / closed client.
         for attempt_i in range(2):
             for prov, mod in attempts:
                 try:
@@ -271,10 +272,20 @@ def speak_as_seat(
                             seat.name,
                             exc,
                         )
-                        time.sleep(2.0 * (attempt_i + 1))
+                        time.sleep(3.0 * (attempt_i + 1))
                         break  # outer attempt retry
                     logger.exception("llm seat call failed")
-                    return {"ok": False, "via": "llm", "error": str(exc), "text": ""}
+                    err = str(exc) or exc.__class__.__name__
+                    # Surface nested cause when OpenAI wraps httpx
+                    cause = getattr(exc, "__cause__", None)
+                    if cause is not None:
+                        err = f"{err} ({cause})"
+                    return {
+                        "ok": False,
+                        "via": "llm",
+                        "error": err,
+                        "text": "",
+                    }
             else:
                 # finished inner attempts without break → override path exhausted
                 break

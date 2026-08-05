@@ -1,5 +1,5 @@
 name: council
-version: 0.1.4
+version: 0.1.5
 description: >
   Multi-perspective deliberation engine for Hermes. Convene named seats,
   run interactive meetings or autonomous work sessions, preserve dissent

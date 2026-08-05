@@ -3,7 +3,7 @@
   "label": "Council",
   "description": "Multi-seat deliberation \u2014 seat columns, steer, round, conclude",
   "icon": "Users",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "tab": {
     "path": "/council",
     "position": "after:kanban"
