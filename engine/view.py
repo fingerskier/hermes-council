@@ -12,6 +12,16 @@ from .paths import council_yaml, scratch_path, sessions_dir
 from . import scratchpad
 from .session import SessionError, load_session, status as session_status
 
+
+def _model_options(root: Path) -> List[str]:
+    try:
+        from .editor import list_model_options
+
+        return list_model_options(root)
+    except Exception:
+        return []
+
+
 _TURN_RE = re.compile(
     r"^## Turn\s+(\d+)\s+—\s+"
     r"(?:"
@@ -173,6 +183,8 @@ def build_snapshot(
                     "name": seat.name,
                     "title": seat.title,
                     "voice": seat.voice,
+                    "model": seat.model or "",
+                    "provider": seat.provider or "",
                     "chair": name == chair,
                 }
             )
@@ -182,6 +194,8 @@ def build_snapshot(
                     "name": name,
                     "title": name,
                     "voice": "",
+                    "model": "",
+                    "provider": "",
                     "chair": name == chair,
                 }
             )
@@ -250,6 +264,7 @@ def build_snapshot(
         "recent_sessions": st_status.get("recent_sessions") or [],
         "interrupted_scratchpads": st_status.get("interrupted_scratchpads") or [],
         "seats": columns,
+        "models": _model_options(root),
         "steers": steers[-8:],
         "turns": turns[-40:],
         "scratch_chars": len(scratch_text),

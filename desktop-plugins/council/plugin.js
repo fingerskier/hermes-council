@@ -85,12 +85,20 @@ function statusTone(status) {
   return 'text-(--ui-text-secondary)'
 }
 
-function SeatColumn({ seat, index }) {
+function SeatColumn({ seat, index, modelOptions, locked, saving, onModelChange }) {
   const color = profileColor(seat.name || String(index))
   const latest = seat.latest
   const empty = !latest || !(latest.content || '').trim()
   const errored = latest && latest.ok === false
   const history = seat.history || []
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const model = seat.model || ''
+  const options = useMemo(() => {
+    const list = Array.isArray(modelOptions) ? [...modelOptions] : []
+    if (model && !list.includes(model)) list.unshift(model)
+    return list
+  }, [modelOptions, model])
+  const disabled = Boolean(locked || saving)
 
   return jsxs('section', {
     className: cn(
@@ -129,11 +137,74 @@ function SeatColumn({ seat, index }) {
                     className: 'truncate text-[0.6875rem] text-(--ui-text-quaternary)',
                     children: seat.voice
                   })
-                : null
+                : null,
+              jsx('div', {
+                className: 'truncate text-[0.625rem] text-(--ui-text-quaternary) font-mono',
+                title: model || 'host default model',
+                children: model || 'model: host default'
+              })
             ]
+          }),
+          jsx(Tip, {
+            label: disabled
+              ? 'Model locked while this council is working'
+              : 'Seat model settings',
+            children: jsx(Button, {
+              size: 'sm',
+              variant: 'ghost',
+              type: 'button',
+              disabled: disabled && !settingsOpen,
+              className: 'h-7 w-7 shrink-0 p-0',
+              onClick: () => {
+                if (disabled) return
+                setSettingsOpen(v => !v)
+              },
+              children: icons.Settings
+                ? jsx(icons.Settings, { className: 'h-3.5 w-3.5' })
+                : '⚙'
+            })
           })
         ]
       }),
+      settingsOpen
+        ? jsxs('div', {
+            className:
+              'flex flex-col gap-1.5 border-b border-(--ui-stroke-secondary) bg-(--ui-bg-secondary,transparent) px-3 py-2',
+            children: [
+              jsx('div', {
+                className: 'text-[0.6875rem] uppercase tracking-wide text-(--ui-text-quaternary)',
+                children: 'Model'
+              }),
+              jsxs('select', {
+                className:
+                  'h-8 w-full rounded border border-(--ui-stroke-secondary) bg-transparent px-2 text-xs font-mono',
+                value: model,
+                disabled,
+                onChange: e => {
+                  const next = e.target.value
+                  if (typeof onModelChange === 'function') {
+                    onModelChange(seat.name, next)
+                  }
+                },
+                children: [
+                  jsx('option', { value: '', children: 'Host default' }, '__default'),
+                  ...options.map(m =>
+                    jsx('option', { value: m, children: m }, m)
+                  )
+                ]
+              }),
+              disabled
+                ? jsx('div', {
+                    className: 'text-[0.625rem] text-(--ui-text-quaternary)',
+                    children: 'Disabled while a round / work turn is running.'
+                  })
+                : jsx('div', {
+                    className: 'text-[0.625rem] text-(--ui-text-quaternary)',
+                    children: 'Saved to .council/seats/' + (seat.name || 'seat') + '.md'
+                  })
+            ]
+          })
+        : null,
       jsx(ScrollArea, {
         className: 'min-h-0 flex-1',
         children: jsxs('div', {
@@ -158,7 +229,8 @@ function SeatColumn({ seat, index }) {
                   children: [
                     jsx(Separator, {}),
                     jsx('div', {
-                      className: 'text-[0.6875rem] uppercase tracking-wide text-(--ui-text-quaternary)',
+                      className:
+                        'text-[0.6875rem] uppercase tracking-wide text-(--ui-text-quaternary)',
                       children: 'Earlier turns'
                     }),
                     ...history
@@ -166,37 +238,38 @@ function SeatColumn({ seat, index }) {
                       .reverse()
                       .slice(0, 4)
                       .map(h =>
-                        jsxs('div', {
-                          key: String(h.turn),
-                          className: 'rounded border border-(--ui-stroke-secondary) p-2',
-                          children: [
-                            jsx('div', {
-                              className: 'mb-1 text-[0.6875rem] text-(--ui-text-quaternary)',
-                              children: `Turn ${h.turn}${h.stamp ? ' · ' + h.stamp : ''}`
-                            }),
-                            jsx('div', {
-                              className: 'whitespace-pre-wrap break-words text-xs text-(--ui-text-secondary)',
-                              children: (h.content || '').slice(0, 600) + ((h.content || '').length > 600 ? '…' : '')
-                            })
-                          ]
-                        })
+                        jsxs(
+                          'div',
+                          {
+                            className: 'rounded border border-(--ui-stroke-secondary) p-2',
+                            children: [
+                              jsx('div', {
+                                className:
+                                  'mb-1 text-[0.6875rem] text-(--ui-text-quaternary)',
+                                children: `Turn ${h.turn}${h.stamp ? ' · ' + h.stamp : ''}`
+                              }),
+                              jsx('div', {
+                                className:
+                                  'line-clamp-6 whitespace-pre-wrap text-xs text-(--ui-text-secondary)',
+                                children: h.content || ''
+                              })
+                            ]
+                          },
+                          String(h.turn)
+                        )
                       )
                   ]
+                })
+              : null,
+            latest && latest.via
+              ? jsx('div', {
+                  className: 'text-[0.625rem] text-(--ui-text-quaternary)',
+                  children: latest.via
                 })
               : null
           ]
         })
-      }),
-      latest
-        ? jsxs('footer', {
-            className:
-              'flex items-center justify-between gap-2 border-t border-(--ui-stroke-secondary) px-3 py-1.5 text-[0.6875rem] text-(--ui-text-quaternary)',
-            children: [
-              jsx('span', { children: latest.stamp ? `Turn ${latest.turn} · ${latest.stamp}` : `Turn ${latest.turn}` }),
-              latest.via ? jsx('span', { children: latest.via }) : null
-            ]
-          })
-        : null
+      })
     ]
   })
 }
@@ -237,9 +310,11 @@ function CouncilPage({ ctx }) {
 
   const snap = snapshotQuery.data
   const seats = (snap && snap.seats) || []
+  const modelOptions = (snap && snap.models) || []
   const session = snap && snap.session
   const activeId = (snap && snap.session_id) || sessionId || ''
-  const busy = !!(snap && snap.busy) || snapshotQuery.isFetching && false
+  const busy = !!(snap && snap.busy)
+  const [modelSaving, setModelSaving] = useState('')
 
   useEffect(() => {
     if (snap && snap.session_id && snap.session_id !== sessionId) {
@@ -251,6 +326,33 @@ function CouncilPage({ ctx }) {
   const invalidate = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: QK })
   }, [])
+
+  const setSeatModel = useCallback(
+    async (seatName, model) => {
+      if (!seatName) return
+      setModelSaving(seatName)
+      try {
+        const data = await rest('/seat/model', {
+          method: 'POST',
+          body: { root: root || null, seat: seatName, model: model || '' },
+          timeoutMs: 20_000
+        })
+        haptic('tap')
+        host.notify({
+          kind: data && data.ok === false ? 'warning' : 'success',
+          message:
+            (data && data.message) ||
+            `Model for ${seatName}: ${model || 'host default'}`
+        })
+        invalidate()
+      } catch (err) {
+        host.notifyError(err, `Could not set model for ${seatName}`)
+      } finally {
+        setModelSaving('')
+      }
+    },
+    [rest, root, invalidate]
+  )
 
   const conveneMut = useMutation({
     mutationFn: () =>
@@ -455,7 +557,18 @@ function CouncilPage({ ctx }) {
           ? jsx('div', {
               className: 'flex min-h-0 flex-1 gap-2 overflow-x-auto pb-1',
               children: seats.map((seat, i) =>
-                jsx(SeatColumn, { seat, index: i }, seat.name || String(i))
+                jsx(
+                  SeatColumn,
+                  {
+                    seat,
+                    index: i,
+                    modelOptions,
+                    locked: busy || acting,
+                    saving: modelSaving === seat.name,
+                    onModelChange: setSeatModel
+                  },
+                  seat.name || String(i)
+                )
               )
             })
           : jsx(EmptyState, {

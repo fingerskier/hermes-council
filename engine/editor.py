@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from . import simple_yaml as yaml
 from .council_io import (
     CURRENT_SCHEMA_VERSION,
+    DEFAULT_MODELS,
     CouncilConfig,
     load_council,
     load_seat,
@@ -159,9 +160,121 @@ def load_editor(root: Path) -> Dict[str, Any]:
         "ok": True,
         "root": str(root),
         "schema_version": cfg.schema_version,
-        "models": list(cfg.models),
+        "models": list_model_options(root),
         "warnings": list(cfg.warnings),
         "seats": [_editor_seat(root, name) for name in cfg.seats],
+    }
+
+
+def list_model_options(root: Path) -> List[str]:
+    """Suggested model ids for seat pickers (council + host + defaults)."""
+    root = root.resolve()
+    cfg = load_council(root)
+    out: List[str] = []
+
+    def _add(value: Any) -> None:
+        if not isinstance(value, str):
+            return
+        model = value.strip()
+        if not model or model in out:
+            return
+        if not MODEL_RE.fullmatch(model):
+            return
+        # Skip Claude Code tier aliases — not Hermes model ids.
+        if model.lower() in {"opus", "sonnet", "haiku", "claude"}:
+            return
+        out.append(model)
+
+    for value in cfg.models:
+        _add(value)
+    for value in DEFAULT_MODELS:
+        _add(value)
+
+    for name in cfg.seats:
+        try:
+            seat = load_seat(root, name)
+        except FileNotFoundError:
+            continue
+        _add(seat.model)
+
+    # Host profile suggestions (best-effort).
+    try:
+        from hermes_constants import get_hermes_home
+
+        home = Path(get_hermes_home())
+        cfg_path = home / "config.yaml"
+        if cfg_path.is_file():
+            try:
+                import yaml as _yaml  # type: ignore
+            except Exception:
+                from . import simple_yaml as _yaml  # type: ignore
+
+            host_cfg = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            if not isinstance(host_cfg, dict):
+                host_cfg = {}
+            model_block = host_cfg.get("model") or {}
+            if isinstance(model_block, dict):
+                _add(model_block.get("default"))
+                aliases = model_block.get("aliases") or {}
+                if isinstance(aliases, dict):
+                    for k, v in aliases.items():
+                        _add(k)
+                        if isinstance(v, str):
+                            # short form "provider/model" → model tail
+                            _add(v)
+                            if "/" in v:
+                                _add(v.split("/")[-1])
+            top_aliases = host_cfg.get("model_aliases") or {}
+            if isinstance(top_aliases, dict):
+                for k, v in top_aliases.items():
+                    _add(k)
+                    if isinstance(v, dict):
+                        _add(v.get("model"))
+                    elif isinstance(v, str):
+                        _add(v)
+                        if "/" in v:
+                            _add(v.split("/")[-1])
+    except Exception:
+        pass
+
+    return out
+
+
+def update_seat_model(root: Path, seat_name: str, model: Any) -> Dict[str, Any]:
+    """Set one seat's model in frontmatter without rewriting the full editor form."""
+    root = root.resolve()
+    name = _validate_seat_id(str(seat_name or ""))
+    cfg = load_council(root)
+    if name not in cfg.seats:
+        raise EditorError(f"unknown seat {name!r}")
+
+    path = _seat_path(root, name)
+    if not path.exists():
+        raise EditorError(f"seat file not found: {name}")
+
+    seat = load_seat(root, name)
+    original = path.read_text(encoding="utf-8")
+    meta, _body = parse_frontmatter(original)
+    meta = dict(meta)
+    meta["name"] = name
+    meta["title"] = meta.get("title") or seat.title
+    meta["voice"] = meta.get("voice") or seat.voice
+    if seat.provider and not meta.get("provider"):
+        meta["provider"] = seat.provider
+    if seat.tools and not meta.get("tools"):
+        meta["tools"] = list(seat.tools)
+    meta["model"] = _validate_model(model, name)
+    text = _serialize_seat(meta, seat.body)
+    _replace_transaction([(path, text)])
+    seat = load_seat(root, name)
+    return {
+        "ok": True,
+        "name": seat.name,
+        "title": seat.title,
+        "model": seat.model,
+        "provider": seat.provider,
+        "message": f"Updated model for {seat.name}",
+        "models": list_model_options(root),
     }
 
 

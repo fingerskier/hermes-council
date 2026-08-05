@@ -142,11 +142,22 @@
 
     function SeatColumn(props) {
       var seat = props.seat || {};
+      var modelOptions = props.modelOptions || [];
+      var locked = !!props.locked;
+      var saving = !!props.saving;
+      var onModelChange = props.onModelChange;
       var color = seatColor(seat.name);
       var latest = seat.latest;
       var empty = !latest || !(latest.content || "").trim();
       var errored = latest && latest.ok === false;
       var history = seat.history || [];
+      var settingsState = useState(false);
+      var settingsOpen = settingsState[0];
+      var setSettingsOpen = settingsState[1];
+      var model = seat.model || "";
+      var options = modelOptions.slice();
+      if (model && options.indexOf(model) === -1) options.unshift(model);
+      var disabled = locked || saving;
 
       return h("section", {
         className: cn(
@@ -166,9 +177,47 @@
             ),
             seat.title
               ? h("div", { className: "truncate text-xs text-muted-foreground" }, seat.title)
-              : null
-          )
+              : null,
+            h("div", {
+              className: "truncate font-mono text-[10px] text-muted-foreground",
+              title: model || "host default",
+            }, model || "model: host default")
+          ),
+          h(Button, {
+            size: "sm",
+            variant: "ghost",
+            type: "button",
+            className: "h-7 w-7 shrink-0 p-0 text-xs",
+            disabled: disabled && !settingsOpen,
+            title: disabled ? "Locked while council is working" : "Seat model",
+            onClick: function () {
+              if (disabled) return;
+              setSettingsOpen(!settingsOpen);
+            },
+          }, "⚙")
         ),
+        settingsOpen
+          ? h("div", { className: "space-y-1 border-b border-border px-3 py-2" },
+              h(Label, { className: "text-[10px] text-muted-foreground" }, "Model"),
+              h("select", {
+                className: "h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs",
+                value: model,
+                disabled: disabled,
+                onChange: function (e) {
+                  if (onModelChange) onModelChange(seat.name, e.target.value);
+                },
+              },
+                h("option", { value: "" }, "Host default"),
+                options.map(function (m) {
+                  return h("option", { key: m, value: m }, m);
+                })
+              ),
+              h("div", { className: "text-[10px] text-muted-foreground" },
+                disabled
+                  ? "Disabled while a round / work turn is running."
+                  : "Writes model into .council/seats/" + (seat.name || "seat") + ".md")
+            )
+          : null,
         h("div", { className: "flex-1 space-y-2 overflow-y-auto p-3 text-sm" },
           empty
             ? h("p", { className: "text-xs text-muted-foreground" }, "No contribution yet.")
@@ -379,6 +428,9 @@
       var pickerOpenState = useState(false);
       var pickerOpen = pickerOpenState[0];
       var setPickerOpen = pickerOpenState[1];
+      var modelSavingState = useState("");
+      var modelSaving = modelSavingState[0];
+      var setModelSaving = modelSavingState[1];
       var pollRef = useRef(null);
 
       var loadTemplates = useCallback(function () {
@@ -462,6 +514,30 @@
         setPickerOpen(true);
       }
 
+      function setSeatModel(seatName, model) {
+        if (!seatName) return;
+        setModelSaving(seatName);
+        setError(null);
+        fetchJSON(API + "/seat/model", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            root: root || null,
+            seat: seatName,
+            model: model || "",
+          }),
+        })
+          .then(function () {
+            return loadSnapshot();
+          })
+          .catch(function (err) {
+            setError(apiError(err));
+          })
+          .finally(function () {
+            setModelSaving("");
+          });
+      }
+
       function runAction(label, method, path, body) {
         setBusy(label);
         setError(null);
@@ -486,6 +562,8 @@
 
       var session = snap && snap.session;
       var seats = (snap && snap.seats) || [];
+      var modelOptions = (snap && snap.models) || [];
+      var sessionBusy = !!(snap && snap.busy) || !!busy;
       var notConvened = snap && snap.ok === false && snap.error === "not_convened";
       var sessionStatus = session && session.status;
       var canRound = session && (session.mode === "meeting" || !session.mode) &&
@@ -664,7 +742,14 @@
               h("div", { className: "flex min-h-[320px] flex-1 gap-3 overflow-x-auto pb-2" },
                 seats.length
                   ? seats.map(function (seat) {
-                      return h(SeatColumn, { key: seat.name, seat: seat });
+                      return h(SeatColumn, {
+                        key: seat.name,
+                        seat: seat,
+                        modelOptions: modelOptions,
+                        locked: sessionBusy,
+                        saving: modelSaving === seat.name,
+                        onModelChange: setSeatModel,
+                      });
                     })
                   : h("div", { className: "text-sm text-muted-foreground" }, "No seats in roster.")
               ),

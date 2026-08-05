@@ -123,6 +123,12 @@ class EditorSaveBody(BaseModel):
     models: Optional[List[str]] = None
 
 
+class SeatModelBody(BaseModel):
+    root: Optional[str] = None
+    seat: str = Field(..., min_length=1)
+    model: str = ""
+
+
 @router.get("/health")
 async def health():
     return {"ok": True, "plugin": "council", "root": str(PLUGIN_ROOT)}
@@ -246,6 +252,37 @@ async def editor_save(body: EditorSaveBody):
         raise
     except Exception as exc:
         log.exception("editor save failed")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/models")
+async def models(root: Optional[str] = None):
+    try:
+        r = _resolve_root(root)
+        return {"ok": True, "models": _engine_editor().list_model_options(r)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("models list failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/seat/model")
+async def seat_model(body: SeatModelBody):
+    """Update one seat's model. Rejected while a session action is in flight."""
+    try:
+        r = _resolve_root(body.root)
+        # Lock all seat model edits while any session is busy on this root.
+        if _busy:
+            raise HTTPException(
+                status_code=409,
+                detail=f"council busy ({next(iter(_busy.values()))}); try again when the seat finishes",
+            )
+        return _engine_editor().update_seat_model(r, body.seat, body.model)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("seat model update failed")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
