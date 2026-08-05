@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -10,6 +11,34 @@ from .council_io import Seat
 from .memory import build_manifest
 
 logger = logging.getLogger(__name__)
+
+# Claude Code content-pack tiers — not Hermes model IDs. Passing them as
+# llm.complete(model=...) trips PluginLlmTrustError when overrides are off,
+# and would be invalid on non-Anthropic hosts even when overrides are on.
+_LEGACY_MODEL_ALIASES = frozenset({"opus", "sonnet", "haiku"})
+
+
+def _seat_llm_overrides(seat: Seat) -> tuple[Optional[str], Optional[str]]:
+    """Return (provider, model) suitable for ctx.llm / subagent overrides."""
+    provider = (getattr(seat, "provider", None) or "").strip() or None
+    model = (seat.model or "").strip() or None
+    if model and model.lower() in _LEGACY_MODEL_ALIASES:
+        model = None
+    return provider, model
+
+
+def _is_override_rejection(exc: BaseException) -> bool:
+    name = type(exc).__name__
+    msg = str(exc).lower()
+    return (
+        "Trust" in name
+        or "cannot override" in msg
+        or "allow_model_override" in msg
+        or "allow_provider_override" in msg
+        or "allowed_models" in msg
+        or "allowed_providers" in msg
+    )
+
 
 ROUTE_SCHEMA = {
     "type": "object",
@@ -73,6 +102,25 @@ def _toolsets_for_mode(mode: str, seat: Seat) -> tuple[str, ...]:
     return tuple(base)
 
 
+def _is_transient_llm_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    name = type(exc).__name__.lower()
+    needles = (
+        "rate",
+        "timeout",
+        "temporar",
+        "overloaded",
+        "429",
+        "529",
+        "503",
+        "502",
+        "connection",
+        "try again",
+        "capacity",
+    )
+    return any(n in msg for n in needles) or any(n in name for n in ("timeout", "rate"))
+
+
 def speak_as_seat(
     ctx: Any,
     *,
@@ -93,6 +141,7 @@ def speak_as_seat(
         f"[Council seat: {seat.name} / {seat.title}]\n"
         f"Mode: {mode}\n"
         f"Task: {task}\n"
+        f"Project root: {root}\n"
     )
     if instruction:
         goal += f"Chair instruction this turn: {instruction}\n"
@@ -105,7 +154,10 @@ def speak_as_seat(
     else:
         goal += (
             "\nThis is a meeting turn: read-only. Do not edit project files. "
-            "Offer judgment, risks, and concrete recommendations.\n"
+            "You may read files under the project root to ground your judgment. "
+            "Offer risks, trade-offs, and concrete recommendations. "
+            "Do NOT narrate a plan to explore later — deliver your seat's "
+            "contribution in this response.\n"
         )
 
     context = (
@@ -117,12 +169,15 @@ def speak_as_seat(
         f"Shared scratchpad so far:\n{scratch[-24000:]}\n\n"
         f"---\n"
         f"Respond in your seat's voice. Be concrete. Name dissent explicitly "
-        f"when you disagree. Do not speak for other seats.\n"
+        f"when you disagree. Do not speak for other seats. "
+        f"Your final message is the contribution written to the scratchpad.\n"
     )
 
-    # Prefer full subagent when available (needs active parent turn)
+    provider_override, model_override = _seat_llm_overrides(seat)
+
+    # Prefer full subagent when available (meeting: read-only tools; work: edit).
     lifecycle = getattr(ctx, "subagent_lifecycle", None) if ctx is not None else None
-    if lifecycle is not None and mode == "work":
+    if lifecycle is not None and mode in {"work", "meeting"}:
         try:
             from agent.subagent_lifecycle import SubagentLaunchRequest
 
@@ -131,6 +186,7 @@ def speak_as_seat(
                     goal=goal[:16000],
                     context=context[:32000],
                     role="leaf",
+                    model=model_override,
                     allowed_toolsets=_toolsets_for_mode(mode, seat),
                     correlation_id=f"council-{session_id}-{seat.name}-{turn}",
                     metadata={
@@ -159,30 +215,76 @@ def speak_as_seat(
         except Exception as exc:
             logger.warning("subagent seat spawn failed (%s); falling back to llm", exc)
 
-    # Meeting (or fallback): single-shot host LLM call — persona judgment
+    # Meeting/work fallback: single-shot host LLM call — persona judgment
     llm = getattr(ctx, "llm", None) if ctx is not None else None
     if llm is not None:
-        try:
-            result = llm.complete(
-                messages=[
-                    {"role": "system", "content": seat.system_prompt},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"{goal}\n\nMemory manifest:\n{manifest}\n\n"
-                            f"Scratchpad:\n{scratch[-20000:]}\n\n"
-                            "Give your seat's contribution now."
-                        ),
-                    },
-                ],
-                purpose=f"council.seat.{seat.name}",
-                max_tokens=2048,
-            )
-            text = (getattr(result, "text", None) or str(result) or "").strip()
-            return {"ok": True, "via": "llm", "text": text or f"({seat.name} silent)"}
-        except Exception as exc:
-            logger.exception("llm seat call failed")
-            return {"ok": False, "via": "llm", "error": str(exc), "text": ""}
+        user_content = (
+            f"{goal}\n\nMemory manifest:\n{manifest}\n\n"
+            f"Scratchpad:\n{scratch[-20000:]}\n\n"
+            "You have NO tools in this fallback path. Judge only from the "
+            "task, scratchpad, and seat brief above. "
+            "Write your full seat contribution now — findings, risks, "
+            "recommendations, and any dissent. No preamble about what you "
+            "will inspect later."
+        )
+        messages = [
+            {"role": "system", "content": seat.system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+        attempts: list[tuple[Optional[str], Optional[str]]] = [
+            (provider_override, model_override)
+        ]
+        if provider_override or model_override:
+            attempts.append((None, None))
+        last_exc: Optional[BaseException] = None
+        # One transient retry after brief backoff (rate limits between seats).
+        for attempt_i in range(2):
+            for prov, mod in attempts:
+                try:
+                    result = llm.complete(
+                        messages=messages,
+                        provider=prov,
+                        model=mod,
+                        purpose=f"council.seat.{seat.name}",
+                        max_tokens=2048,
+                    )
+                    text = (getattr(result, "text", None) or str(result) or "").strip()
+                    return {
+                        "ok": True,
+                        "via": "llm",
+                        "text": text or f"({seat.name} silent)",
+                        "provider": prov,
+                        "model": mod,
+                    }
+                except Exception as exc:
+                    last_exc = exc
+                    if _is_override_rejection(exc) and (prov or mod):
+                        logger.warning(
+                            "seat %s llm override rejected (%s); retrying host default",
+                            seat.name,
+                            exc,
+                        )
+                        continue
+                    if _is_transient_llm_error(exc) and attempt_i == 0:
+                        logger.warning(
+                            "seat %s transient llm error (%s); backing off",
+                            seat.name,
+                            exc,
+                        )
+                        time.sleep(2.0 * (attempt_i + 1))
+                        break  # outer attempt retry
+                    logger.exception("llm seat call failed")
+                    return {"ok": False, "via": "llm", "error": str(exc), "text": ""}
+            else:
+                # finished inner attempts without break → override path exhausted
+                break
+        logger.exception("llm seat call failed after retries")
+        return {
+            "ok": False,
+            "via": "llm",
+            "error": str(last_exc) if last_exc else "unknown",
+            "text": "",
+        }
 
     # Last resort: deterministic stub so offline tests / dry runs work
     stub = (

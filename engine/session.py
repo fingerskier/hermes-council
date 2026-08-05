@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .council_io import load_council, load_seat
+from .council_io import load_council, load_seat, seat_from_snapshot, snapshot_seat
 from .memory import update_topic
 from .paths import (
     council_yaml,
@@ -96,6 +96,9 @@ def _base_state(
     task: str,
     cfg,
 ) -> Dict[str, Any]:
+    if not cfg.seats:
+        raise SessionError("Cannot start a council session with zero seats")
+    snapshots = [snapshot_seat(root, name) for name in cfg.seats]
     started = int(time.time())
     sid = new_session_id(task)
     return {
@@ -105,6 +108,7 @@ def _base_state(
         "root": str(root.resolve()),
         "chair": cfg.chair,
         "seats": list(cfg.seats),
+        "seat_snapshots": snapshots,
         "active_seats": list(cfg.seats),
         "turn": 0,
         "seat_turns": 0,
@@ -122,6 +126,14 @@ def _base_state(
     }
 
 
+def _pinned_seat(root: Path, state: Dict[str, Any], name: str):
+    """Load pinned seat content, with compatibility for legacy sessions."""
+    for row in state.get("seat_snapshots") or []:
+        if row.get("name") == name:
+            return seat_from_snapshot(row)
+    return load_seat(root, name)
+
+
 def meeting_start(root: Path, task: str, ctx: Any = None) -> Dict[str, Any]:
     del ctx  # reserved
     root = root.resolve()
@@ -136,6 +148,7 @@ def meeting_start(root: Path, task: str, ctx: Any = None) -> Dict[str, Any]:
         chair=cfg.chair,
         seats=cfg.seats,
         started_epoch=state["started_epoch"],
+        seat_snapshots=state["seat_snapshots"],
     )
     state["status"] = "awaiting_round"
     _save(root, state)
@@ -202,7 +215,7 @@ def meeting_round(
     for seat_name in state["seats"]:
         state["turn"] += 1
         state["seat_turns"] += 1
-        seat = load_seat(root, seat_name)
+        seat = _pinned_seat(root, state, seat_name)
         scratch_text = scratchpad.read_scratch(sp)
         result = speak_as_seat(
             ctx,
@@ -215,7 +228,28 @@ def meeting_round(
             turn=state["turn"],
             memory_budget=int(state.get("memory_budget") or 8000),
         )
+        # One retry on hard empty failure (rate limits, flaky provider).
+        if not result.get("ok") or not (result.get("text") or "").strip():
+            time.sleep(1.5)
+            result = speak_as_seat(
+                ctx,
+                seat=seat,
+                task=state["task"],
+                scratch=scratch_text,
+                root=str(root),
+                mode="meeting",
+                session_id=session_id,
+                turn=state["turn"],
+                memory_budget=int(state.get("memory_budget") or 8000),
+            )
+            if result.get("ok"):
+                result = {**result, "retried": True}
+
         text = result.get("text") or ""
+        if not result.get("ok") and not text.strip():
+            text = (
+                f"({seat.name} ERROR: {result.get('error') or 'empty contribution'})"
+            )
         scratchpad.append_turn(
             sp,
             seat=seat.name,
@@ -231,9 +265,14 @@ def meeting_round(
             "ok": result.get("ok"),
             "chars": len(text),
         }
+        if result.get("error"):
+            entry["error"] = str(result["error"])[:500]
+        if result.get("retried"):
+            entry["retried"] = True
         contributions.append(entry)
         state["contributions"].append(entry)
 
+    failed = [c for c in contributions if not c.get("ok")]
     state["status"] = "awaiting_user"
     _save(root, state)
 
@@ -243,9 +282,17 @@ def meeting_round(
         "round_contributions": contributions,
         "seat_turns": state["seat_turns"],
         "status": state["status"],
+        "failed_seats": [c["seat"] for c in failed],
         "scratch": str(sp),
         "message": (
-            "Round complete. Provide a steer via meeting_round(user_steer=...) "
+            "Round complete"
+            + (
+                f" with {len(failed)} seat failure(s): "
+                + ", ".join(c["seat"] for c in failed)
+                if failed
+                else ""
+            )
+            + ". Provide a steer via meeting_round(user_steer=...) "
             "for another round, or meeting_conclude."
         ),
         "next_options": ["meeting_round", "meeting_conclude"],
@@ -264,7 +311,7 @@ def conclude_meeting(
 
     sp = scratch_path(root, session_id)
     scratch_text = scratchpad.read_scratch(sp)
-    chair = load_seat(root, state["chair"])
+    chair = _pinned_seat(root, state, state["chair"])
     synth = synthesize(
         ctx,
         chair=chair,
@@ -328,6 +375,41 @@ def conclude_meeting(
     }
 
 
+def cancel_session(root: Path, session_id: str) -> Dict[str, Any]:
+    """Stop a meeting or work session without synthesis, record, or commit."""
+    root = root.resolve()
+    state = load_session(root, session_id)
+    if state["status"] in {"concluded", "stopped"}:
+        return {
+            "ok": True,
+            "already_finished": True,
+            "session_id": session_id,
+            "mode": state.get("mode"),
+            "status": state["status"],
+            "stop_reason": state.get("stop_reason"),
+            "record": state.get("record"),
+            "worktree": state.get("worktree"),
+        }
+
+    state["status"] = "stopped"
+    state["done"] = True
+    state["stop_reason"] = "user_cancelled"
+    _save(root, state)
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "mode": state.get("mode"),
+        "status": "stopped",
+        "stop_reason": "user_cancelled",
+        "record": None,
+        "worktree": state.get("worktree"),
+        "message": (
+            "Session cancelled without synthesis or record. "
+            "Any worktree changes were left untouched."
+        ),
+    }
+
+
 def work_start(root: Path, task: str, ctx: Any = None) -> Dict[str, Any]:
     del ctx
     root = root.resolve()
@@ -349,6 +431,7 @@ def work_start(root: Path, task: str, ctx: Any = None) -> Dict[str, Any]:
         chair=cfg.chair,
         seats=cfg.seats,
         started_epoch=state["started_epoch"],
+        seat_snapshots=state["seat_snapshots"],
     )
     # Note worktree in scratch
     scratchpad.append_turn(
@@ -409,7 +492,7 @@ def work_tick(root: Path, session_id: str, ctx: Any = None) -> Dict[str, Any]:
     if reason:
         return _finish_work(root, state, ctx, stop_reason=reason)
 
-    chair = load_seat(root, state["chair"])
+    chair = _pinned_seat(root, state, state["chair"])
     scratch_text = scratchpad.read_scratch(sp)
 
     # Inline chair routing (not a counted seat turn)
@@ -446,7 +529,7 @@ def work_tick(root: Path, session_id: str, ctx: Any = None) -> Dict[str, Any]:
     if not next_seat:
         return _finish_work(root, state, ctx, stop_reason="no_seat")
 
-    seat = load_seat(root, next_seat)
+    seat = _pinned_seat(root, state, next_seat)
     state["turn"] += 1
     state["seat_turns"] += 1
     wpath = (state.get("worktree") or {}).get("path")
@@ -542,7 +625,7 @@ def _finish_work(
     session_id = state["id"]
     sp = scratch_path(root, session_id)
     scratch_text = scratchpad.read_scratch(sp)
-    chair = load_seat(root, state["chair"])
+    chair = _pinned_seat(root, state, state["chair"])
 
     wpath = (state.get("worktree") or {}).get("path")
     branch = (state.get("worktree") or {}).get("branch")
@@ -593,7 +676,11 @@ def _finish_work(
         archive_scratch=True,
     )
 
-    state["status"] = "concluded" if stop_reason == "chair_done" else "stopped"
+    state["status"] = (
+        "concluded"
+        if stop_reason in {"chair_done", "user_concluded"}
+        else "stopped"
+    )
     state["done"] = True
     state["stop_reason"] = stop_reason
     state["record"] = rec.get("record")

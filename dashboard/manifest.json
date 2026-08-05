@@ -1,0 +1,13 @@
+{
+  "name": "council",
+  "label": "Council",
+  "description": "Multi-seat deliberation — seat columns, steer, round, conclude",
+  "icon": "Users",
+  "version": "0.1.1",
+  "tab": {
+    "path": "/council",
+    "position": "after:kanban"
+  },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

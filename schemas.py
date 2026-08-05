@@ -28,6 +28,7 @@ COUNCIL_SCHEMA = {
                     "meeting_start",
                     "meeting_round",
                     "meeting_conclude",
+                    "session_cancel",
                     "work_start",
                     "work_tick",
                     "work_stop",
@@ -57,7 +58,7 @@ COUNCIL_SCHEMA = {
             },
             "session_id": {
                 "type": "string",
-                "description": "Session id for round/tick/conclude/stop/status",
+                "description": "Session id for round/tick/conclude/cancel/stop/status",
             },
             "user_steer": {
                 "type": "string",

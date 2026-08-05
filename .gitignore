@@ -6,8 +6,9 @@ __pycache__/
 venv/
 .coverage
 dist/
+!dashboard/dist/
+!dashboard/dist/**
 build/
 .DS_Store
 *.log
-.council/scratch/
-.council/worktrees/
+.council/

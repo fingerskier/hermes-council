@@ -11,6 +11,7 @@ from .engine.info import council_info
 from .engine.paths import resolve_root
 from .engine.session import (
     SessionError,
+    cancel_session,
     conclude_meeting,
     meeting_round,
     meeting_start,
@@ -94,6 +95,12 @@ def handle_council(args: Dict[str, Any], **kwargs: Any) -> str:
                 return _err("session_id is required for meeting_conclude")
             return _ok(conclude_meeting(root, sid, ctx=_ctx()))
 
+        if action == "session_cancel":
+            sid = str(args.get("session_id") or "").strip()
+            if not sid:
+                return _err("session_id is required for session_cancel")
+            return _ok(cancel_session(root, sid))
+
         if action == "work_start":
             task = str(args.get("task") or "").strip()
             if not task:
@@ -123,6 +130,7 @@ def handle_council(args: Dict[str, Any], **kwargs: Any) -> str:
                 "meeting_start",
                 "meeting_round",
                 "meeting_conclude",
+                "session_cancel",
                 "work_start",
                 "work_tick",
                 "work_stop",
@@ -149,6 +157,7 @@ def handle_slash(raw_args: str) -> Optional[str]:
             "  /council meeting <task>\n"
             "  /council meeting_round <session_id> [steer...]\n"
             "  /council conclude <session_id>\n"
+            "  /council cancel <session_id>\n"
             "  /council work <task>\n"
             "  /council tick <session_id>\n"
             "  /council stop <session_id>\n"
@@ -172,6 +181,11 @@ def handle_slash(raw_args: str) -> Optional[str]:
         "conclude": ("meeting_conclude", {"session_id": rest.split()[0] if rest else ""}),
         "meeting_conclude": (
             "meeting_conclude",
+            {"session_id": rest.split()[0] if rest else ""},
+        ),
+        "cancel": ("session_cancel", {"session_id": rest.split()[0] if rest else ""}),
+        "session_cancel": (
+            "session_cancel",
             {"session_id": rest.split()[0] if rest else ""},
         ),
         "work": ("work_start", {"task": rest.strip("\"'")}),

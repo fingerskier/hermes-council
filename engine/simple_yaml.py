@@ -36,7 +36,7 @@ def safe_dump(data: Any, *, sort_keys: bool = False, allow_unicode: bool = True)
 def _mini_load(text: str) -> Any:
     lines = text.splitlines()
     root: dict = {}
-    stack: List[tuple[int, dict]] = [(-1, root)]
+    stack: List[tuple[int, Any]] = [(-1, root)]
     i = 0
     while i < len(lines):
         raw = lines[i]
@@ -50,11 +50,23 @@ def _mini_load(text: str) -> Any:
         indent = len(line) - len(line.lstrip(" "))
         content = line.strip()
         while stack and indent <= stack[-1][0]:
+            # YAML allows list items at the same indent as the parent key:
+            #   seats:
+            #   - a
+            # Keep the list frame in that case.
+            if (
+                content.startswith("- ")
+                and isinstance(stack[-1][1], list)
+                and indent == stack[-1][0]
+            ):
+                break
             stack.pop()
         parent = stack[-1][1]
 
         if content.startswith("- "):
-            # list item under previous key — not used in our templates at root
+            # Block list item under a list parent
+            if isinstance(parent, list):
+                parent.append(_parse_scalar(content[2:].strip()))
             continue
 
         if ":" not in content:
@@ -63,7 +75,22 @@ def _mini_load(text: str) -> Any:
         key = key.strip()
         rest = rest.strip()
         if rest == "":
-            # nested mapping
+            # Nested mapping OR block list — peek next non-empty line
+            j = i
+            while j < len(lines) and (
+                not lines[j].strip() or lines[j].lstrip().startswith("#")
+            ):
+                j += 1
+            if j < len(lines):
+                nxt = lines[j]
+                nindent = len(nxt) - len(nxt.lstrip(" "))
+                ncontent = nxt.split(" #", 1)[0].strip()
+                # List items may share the key's indent (common PyYAML dump style)
+                if nindent >= indent and ncontent.startswith("- "):
+                    items: list = []
+                    parent[key] = items
+                    stack.append((indent, items))
+                    continue
             child: dict = {}
             parent[key] = child
             stack.append((indent, child))

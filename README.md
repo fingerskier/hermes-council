@@ -78,6 +78,7 @@ hermes council status
 | `status` | Sessions + interrupted scratchpads |
 | `meeting_start` / `meeting_round` / `meeting_conclude` | Human-in-the-loop |
 | `work_start` / `work_tick` / `work_stop` | Autonomous worktree loop |
+| `session_cancel` | Stop either mode without synthesis, record, or worktree commit |
 
 ## Layout
 
@@ -114,6 +115,36 @@ skills/council/SKILL.md   # thin agent guidance
 
 Add a seat: drop markdown in `data/personalities/` (or `.council/seats/` after convene) and list it in the template / `council.yaml`.
 
+## Desktop UI
+
+Seat columns + steer input for Hermes Desktop:
+
+```bash
+# Desktop plugin (renderer) — folder name must be council
+mkdir -p "$HERMES_HOME/desktop-plugins/council"
+ln -sfn /path/to/hermes-council/desktop-plugins/council/plugin.js \
+  "$HERMES_HOME/desktop-plugins/council/plugin.js"
+```
+
+With the fingerskier profile:
+
+```bash
+mkdir -p ~/.hermes/profiles/fingerskier/desktop-plugins/council
+ln -sfn ~/fingerskier/hermes-council/desktop-plugins/council/plugin.js \
+  ~/.hermes/profiles/fingerskier/desktop-plugins/council/plugin.js
+```
+
+Backend API lives in the Python plugin (`dashboard/plugin_api.py`) and mounts only
+when `council` is in `plugins.enabled`. **Restart the gateway / desktop backend**
+after installing so `/api/plugins/council/*` is available.
+
+In Desktop: **⌘K → Reload desktop plugins**, then open **Council** in the sidebar
+(or palette “Open Council”). Start either a meeting or work session; every active
+session exposes **Cancel** and **Conclude**, and every concluded/stopped session
+shows the new-session launcher again. Open **Council Editor** to reorder seats,
+choose or enter models, and edit persona Markdown. Editor changes are explicit-save
+only and retain an unsaved warning after validation or persistence failures.
+
 ## Design principles
 
 1. **Personalities are data**, not registered agents.  
@@ -138,7 +169,7 @@ v0.1.0 — spine complete:
 - slash command, agent tool, CLI  
 - bundled personalities/templates from council-ai-plugin  
 
-Next: desktop council pane, richer seat tool policies, optional dual-write compatibility helpers.
+Next: richer seat tool policies, optional dual-write compatibility helpers.
 
 ## License
 
