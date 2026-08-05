@@ -123,7 +123,57 @@ def _base_state(
         "done": False,
         "stop_reason": None,
         "contributions": [],
+        "phase": "idle",
+        "current_seat": None,
+        "seat_progress": {name: "idle" for name in cfg.seats},
     }
+
+
+def _init_progress(state: Dict[str, Any], *, waiting: bool = True) -> None:
+    seats = list(state.get("seats") or [])
+    prog = dict(state.get("seat_progress") or {})
+    for name in seats:
+        if name not in prog:
+            prog[name] = "idle"
+    if waiting:
+        for name in seats:
+            # Keep done/error from prior rounds until this round touches them
+            if prog.get(name) not in {"thinking", "waiting"}:
+                prog[name] = "waiting" if waiting else prog.get(name) or "idle"
+    state["seat_progress"] = prog
+    state["current_seat"] = None
+
+
+def _set_seat_status(
+    root: Path,
+    state: Dict[str, Any],
+    seat_name: Optional[str],
+    status: str,
+    *,
+    phase: Optional[str] = None,
+) -> None:
+    """Persist live seat status so snapshot polling can show thinking/waiting."""
+    prog = dict(state.get("seat_progress") or {})
+    seats = list(state.get("seats") or [])
+    for name in seats:
+        prog.setdefault(name, "idle")
+    if seat_name:
+        prog[seat_name] = status
+        state["current_seat"] = seat_name if status == "thinking" else state.get("current_seat")
+        if status != "thinking" and state.get("current_seat") == seat_name:
+            if status in {"done", "error", "idle", "waiting"}:
+                state["current_seat"] = None if status != "thinking" else seat_name
+    if status == "thinking" and seat_name:
+        state["current_seat"] = seat_name
+        # Others that haven't finished this wave stay waiting
+        for name in seats:
+            if name != seat_name and prog.get(name) not in {"done", "error"}:
+                if prog.get(name) == "idle":
+                    prog[name] = "waiting"
+    if phase is not None:
+        state["phase"] = phase
+    state["seat_progress"] = prog
+    _save(root, state)
 
 
 def _pinned_seat(root: Path, state: Dict[str, Any], name: str):
@@ -212,10 +262,16 @@ def meeting_round(
         }
 
     contributions = []
+    state["status"] = "running"
+    state["phase"] = "running_round"
+    _init_progress(state, waiting=True)
+    _save(root, state)
+
     for seat_name in state["seats"]:
         state["turn"] += 1
         state["seat_turns"] += 1
         seat = _pinned_seat(root, state, seat_name)
+        _set_seat_status(root, state, seat_name, "thinking", phase="running_round")
         scratch_text = scratchpad.read_scratch(sp)
         result = speak_as_seat(
             ctx,
@@ -271,9 +327,26 @@ def meeting_round(
             entry["retried"] = True
         contributions.append(entry)
         state["contributions"].append(entry)
+        _set_seat_status(
+            root,
+            state,
+            seat_name,
+            "done" if result.get("ok") else "error",
+            phase="running_round",
+        )
 
     failed = [c for c in contributions if not c.get("ok")]
     state["status"] = "awaiting_user"
+    state["phase"] = "awaiting_user"
+    state["current_seat"] = None
+    # Normalize: non-error finished seats stay done until next round
+    prog = dict(state.get("seat_progress") or {})
+    for name in state.get("seats") or []:
+        if prog.get(name) == "waiting":
+            prog[name] = "idle"
+        if prog.get(name) == "thinking":
+            prog[name] = "idle"
+    state["seat_progress"] = prog
     _save(root, state)
 
     return {
@@ -532,6 +605,9 @@ def work_tick(root: Path, session_id: str, ctx: Any = None) -> Dict[str, Any]:
     seat = _pinned_seat(root, state, next_seat)
     state["turn"] += 1
     state["seat_turns"] += 1
+    state["status"] = "running"
+    state["phase"] = "work_tick"
+    _set_seat_status(root, state, seat.name, "thinking", phase="work_tick")
     wpath = (state.get("worktree") or {}).get("path")
     result = speak_as_seat(
         ctx,
@@ -563,6 +639,15 @@ def work_tick(root: Path, session_id: str, ctx: Any = None) -> Dict[str, Any]:
         "chars": len(text),
     }
     state["contributions"].append(entry)
+    _set_seat_status(
+        root,
+        state,
+        seat.name,
+        "done" if result.get("ok") else "error",
+        phase="awaiting_tick",
+    )
+    state["phase"] = "awaiting_tick"
+    state["status"] = "active"
 
     wt_status = None
     if wpath:

@@ -26,6 +26,7 @@ import {
   SIDEBAR_NAV_AREA,
   STATUSBAR_AREAS,
   Separator,
+  StatusDot,
   Textarea,
   Tip,
   cn,
@@ -79,10 +80,27 @@ async function pickDirectory(defaultPath) {
 
 function statusTone(status) {
   if (!status) return 'text-(--ui-text-quaternary)'
-  if (status === 'awaiting_user' || status === 'awaiting_round') return 'text-(--ui-accent)'
-  if (status === 'concluded') return 'text-(--ui-text-tertiary)'
-  if (status === 'stopped') return 'text-red-400'
+  if (status === 'awaiting_user' || status === 'awaiting_round' || status === 'ready')
+    return 'text-(--ui-accent)'
+  if (status === 'running' || status === 'running_round' || status === 'thinking')
+    return 'text-(--ui-accent)'
+  if (status === 'concluded' || status === 'done') return 'text-(--ui-text-tertiary)'
+  if (status === 'stopped' || status === 'error') return 'text-red-400'
   return 'text-(--ui-text-secondary)'
+}
+
+function seatStatusMeta(status) {
+  const s = String(status || 'idle')
+  const map = {
+    thinking: { label: 'thinking', tone: 'info', spin: true },
+    waiting: { label: 'waiting', tone: 'neutral', spin: false },
+    ready: { label: 'ready', tone: 'success', spin: false },
+    done: { label: 'done', tone: 'success', spin: false },
+    error: { label: 'error', tone: 'danger', spin: false },
+    idle: { label: 'idle', tone: 'neutral', spin: false },
+    active: { label: 'active', tone: 'info', spin: false }
+  }
+  return map[s] || { label: s, tone: 'neutral', spin: false }
 }
 
 function SeatColumn({ seat, index, modelOptions, locked, saving, onModelChange }) {
@@ -93,6 +111,8 @@ function SeatColumn({ seat, index, modelOptions, locked, saving, onModelChange }
   const history = seat.history || []
   const [settingsOpen, setSettingsOpen] = useState(false)
   const model = seat.model || ''
+  const seatStatus = seat.status || (errored ? 'error' : empty ? 'idle' : 'done')
+  const statusMeta = seatStatusMeta(seatStatus)
   const options = useMemo(() => {
     const list = Array.isArray(modelOptions) ? [...modelOptions] : []
     if (model && !list.includes(model)) list.unshift(model)
@@ -103,7 +123,8 @@ function SeatColumn({ seat, index, modelOptions, locked, saving, onModelChange }
   return jsxs('section', {
     className: cn(
       'flex min-w-[220px] max-w-[420px] flex-1 flex-col overflow-hidden rounded-md border',
-      'border-(--ui-stroke-secondary)'
+      'border-(--ui-stroke-secondary)',
+      seat.active || seatStatus === 'thinking' ? 'ring-1 ring-(--ui-accent)' : null
     ),
     style: { borderTopColor: color, borderTopWidth: 2 },
     children: [
@@ -127,7 +148,21 @@ function SeatColumn({ seat, index, modelOptions, locked, saving, onModelChange }
                   seat.chair
                     ? jsx(Badge, { variant: 'secondary', children: 'chair' })
                     : null,
-                  errored
+                  jsxs('span', {
+                    className:
+                      'inline-flex items-center gap-1 rounded-full border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.625rem] uppercase tracking-wide ' +
+                      statusTone(seatStatus),
+                    children: [
+                      StatusDot
+                        ? jsx(StatusDot, { tone: statusMeta.tone, className: 'h-1.5 w-1.5' })
+                        : null,
+                      statusMeta.spin
+                        ? jsx(GlyphSpinner, { className: 'h-3 w-3' })
+                        : null,
+                      statusMeta.label
+                    ]
+                  }),
+                  errored && seatStatus !== 'error'
                     ? jsx(Badge, { variant: 'secondary', children: 'error' })
                     : null
                 ]
@@ -298,7 +333,14 @@ function CouncilPage({ ctx }) {
       if (sessionId) qs.set('session_id', sessionId)
       return rest(`/snapshot?${qs.toString()}`)
     },
-    refetchInterval: 4000,
+    refetchInterval: query => {
+      const d = query.state.data
+      if (d && (d.busy || d.phase === 'running_round' || d.phase === 'work_tick' || d.current_seat)) {
+        return 1500
+      }
+      if (d && d.session && d.session.status === 'running') return 1500
+      return 4000
+    },
     retry: 1
   })
 

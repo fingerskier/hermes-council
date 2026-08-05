@@ -158,10 +158,20 @@
       var options = modelOptions.slice();
       if (model && options.indexOf(model) === -1) options.unshift(model);
       var disabled = locked || saving;
+      var seatStatus = seat.status || (errored ? "error" : empty ? "idle" : "done");
+      var statusLabel = seatStatus;
+      var statusClass =
+        seatStatus === "thinking" ? "bg-blue-500/15 text-blue-600" :
+        seatStatus === "waiting" ? "bg-muted text-muted-foreground" :
+        seatStatus === "ready" ? "bg-emerald-500/15 text-emerald-700" :
+        seatStatus === "done" ? "bg-emerald-500/10 text-emerald-700" :
+        seatStatus === "error" ? "bg-destructive/15 text-destructive" :
+        "bg-muted/60 text-muted-foreground";
 
       return h("section", {
         className: cn(
-          "flex min-w-[220px] max-w-[380px] flex-1 flex-col overflow-hidden rounded-md border border-border bg-card"
+          "flex min-w-[220px] max-w-[380px] flex-1 flex-col overflow-hidden rounded-md border border-border bg-card",
+          (seat.active || seatStatus === "thinking") ? "ring-1 ring-primary/40" : ""
         ),
         style: { borderTopColor: color, borderTopWidth: 2 },
       },
@@ -171,9 +181,12 @@
             style: { background: color },
           }),
           h("div", { className: "min-w-0 flex-1" },
-            h("div", { className: "flex items-center gap-2" },
+            h("div", { className: "flex flex-wrap items-center gap-2" },
               h("span", { className: "truncate text-sm font-medium" }, seat.name || "seat"),
-              seat.chair ? h(Badge, { variant: "secondary", className: "text-[10px]" }, "chair") : null
+              seat.chair ? h(Badge, { variant: "secondary", className: "text-[10px]" }, "chair") : null,
+              h("span", {
+                className: "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] uppercase tracking-wide " + statusClass,
+              }, statusLabel)
             ),
             seat.title
               ? h("div", { className: "truncate text-xs text-muted-foreground" }, seat.title)
@@ -466,7 +479,7 @@
         if (pollRef.current) clearInterval(pollRef.current);
         pollRef.current = setInterval(function () {
           if (!busy) loadSnapshot();
-        }, 8000);
+        }, (snap && (snap.busy || snap.phase === "running_round" || snap.current_seat)) ? 1500 : 8000);
         return function () {
           if (pollRef.current) clearInterval(pollRef.current);
         };

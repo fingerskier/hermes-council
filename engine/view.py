@@ -22,6 +22,49 @@ def _model_options(root: Path) -> List[str]:
         return []
 
 
+def _seat_ui_status(
+    *,
+    name: str,
+    progress: Dict[str, Any],
+    current_seat: Optional[str],
+    session: Optional[Dict[str, Any]],
+    latest: Optional[Dict[str, Any]],
+    phase: Optional[str],
+) -> str:
+    """Normalize per-seat UI status: thinking|waiting|done|error|idle|ready."""
+    raw = None
+    if isinstance(progress, dict):
+        raw = progress.get(name)
+    if current_seat and name == current_seat:
+        return "thinking"
+    if raw in {"thinking", "waiting", "done", "error", "idle", "ready"}:
+        # After a finished round, "done" is useful; while idle with no session, idle.
+        if raw == "done" and session and session.get("status") in {
+            "concluded",
+            "stopped",
+        }:
+            return "done"
+        return str(raw)
+    if latest is not None:
+        if latest.get("ok") is False or (
+            isinstance(latest.get("content"), str)
+            and "ERROR:" in latest.get("content", "")
+        ):
+            return "error"
+        if latest.get("content"):
+            return "done"
+    if not session:
+        return "idle"
+    st = session.get("status") or ""
+    if st in {"running"} or phase in {"running_round", "work_tick"}:
+        return "waiting"
+    if st in {"awaiting_user", "awaiting_round", "active"}:
+        return "ready"
+    if st in {"concluded", "stopped"}:
+        return "idle"
+    return "idle"
+
+
 _TURN_RE = re.compile(
     r"^## Turn\s+(\d+)\s+—\s+"
     r"(?:"
@@ -219,13 +262,31 @@ def build_snapshot(
     history = _history_per_seat(turns, seat_names)
 
     columns = []
+    progress = {}
+    current_seat = None
+    phase = None
+    if session:
+        progress = dict(session.get("seat_progress") or {})
+        current_seat = session.get("current_seat")
+        phase = session.get("phase") or session.get("status")
+
     for meta in seats_meta:
         name = meta["name"]
+        status = _seat_ui_status(
+            name=name,
+            progress=progress,
+            current_seat=current_seat,
+            session=session,
+            latest=latest.get(name),
+            phase=phase,
+        )
         columns.append(
             {
                 **meta,
                 "latest": latest.get(name),
                 "history": history.get(name) or [],
+                "status": status,
+                "active": name == current_seat,
             }
         )
 
@@ -265,6 +326,8 @@ def build_snapshot(
         "interrupted_scratchpads": st_status.get("interrupted_scratchpads") or [],
         "seats": columns,
         "models": _model_options(root),
+        "phase": phase,
+        "current_seat": current_seat,
         "steers": steers[-8:],
         "turns": turns[-40:],
         "scratch_chars": len(scratch_text),
