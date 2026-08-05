@@ -203,6 +203,145 @@
       );
     }
 
+    function DirectoryPicker(props) {
+      var initialPath = props.initialPath || "";
+      var onSelect = props.onSelect;
+      var onCancel = props.onCancel;
+      var pathState = useState(initialPath);
+      var path = pathState[0];
+      var setPath = pathState[1];
+      var dataState = useState(null);
+      var data = dataState[0];
+      var setData = dataState[1];
+      var errState = useState("");
+      var err = errState[0];
+      var setErr = errState[1];
+      var loadingState = useState(true);
+      var loading = loadingState[0];
+      var setLoading = loadingState[1];
+
+      var load = useCallback(function (p) {
+        setLoading(true);
+        setErr("");
+        var url = API + "/browse" + qs({ path: p || undefined });
+        return fetchJSON(url)
+          .then(function (res) {
+            setData(res);
+            setPath((res && res.path) || p || "");
+            setLoading(false);
+          })
+          .catch(function (e) {
+            setErr(apiError(e));
+            setLoading(false);
+          });
+      }, []);
+
+      useEffect(function () {
+        load(initialPath);
+      }, [initialPath, load]);
+
+      var children = (data && data.children) || [];
+
+      return h("div", {
+        className:
+          "mt-2 w-full max-w-xl rounded-md border border-border bg-card p-3 shadow-sm",
+      },
+        h("div", { className: "mb-2 flex items-center justify-between gap-2" },
+          h("div", { className: "text-sm font-medium" }, "Choose project folder"),
+          h(Button, {
+            size: "sm",
+            variant: "ghost",
+            type: "button",
+            onClick: onCancel,
+          }, "Close")
+        ),
+        h("div", { className: "mb-2 flex gap-2" },
+          h(Input, {
+            className: "h-8 flex-1 font-mono text-xs",
+            value: path,
+            onChange: function (e) { setPath(e.target.value); },
+            onKeyDown: function (e) {
+              if (e.key === "Enter") load(path);
+            },
+          }),
+          h(Button, {
+            size: "sm",
+            variant: "outline",
+            type: "button",
+            onClick: function () { load(path); },
+          }, "Go")
+        ),
+        err
+          ? h("div", {
+              className: "mb-2 text-xs text-destructive",
+            }, err)
+          : null,
+        h("div", {
+          className:
+            "mb-2 max-h-56 overflow-y-auto rounded border border-border",
+        },
+          loading
+            ? h("div", { className: "p-3 text-xs text-muted-foreground" }, "Loading…")
+            : h("div", { className: "divide-y divide-border" },
+                data && data.parent
+                  ? h("button", {
+                      type: "button",
+                      className:
+                        "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/50",
+                      onClick: function () { load(data.parent); },
+                    }, "‥  (parent)")
+                  : null,
+                children.length
+                  ? children.map(function (ch) {
+                      return h("button", {
+                        key: ch.path,
+                        type: "button",
+                        className:
+                          "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs hover:bg-muted/50",
+                        onClick: function () { load(ch.path); },
+                        onDoubleClick: function () {
+                          if (onSelect) onSelect(ch.path);
+                        },
+                      },
+                        h("span", { className: "truncate font-mono" }, ch.name),
+                        ch.has_council
+                          ? h(Badge, {
+                              variant: "secondary",
+                              className: "shrink-0 text-[10px]",
+                            }, ".council")
+                          : null
+                      );
+                    })
+                  : h("div", {
+                      className: "p-3 text-xs text-muted-foreground",
+                    }, "No subfolders")
+              )
+        ),
+        h("div", { className: "flex flex-wrap items-center justify-between gap-2" },
+          h("div", { className: "min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" },
+            path || "",
+            data && data.has_council ? "  · has .council/" : ""
+          ),
+          h("div", { className: "flex gap-2" },
+            h(Button, {
+              size: "sm",
+              variant: "ghost",
+              type: "button",
+              onClick: onCancel,
+            }, "Cancel"),
+            h(Button, {
+              size: "sm",
+              type: "button",
+              disabled: !path,
+              onClick: function () {
+                if (path && onSelect) onSelect(path);
+              },
+            }, "Use this folder")
+          )
+        )
+      );
+    }
+
     function CouncilPage() {
       var rootState = useState(readStoredRoot);
       var root = rootState[0];
@@ -237,6 +376,9 @@
       var loadingState = useState(true);
       var loading = loadingState[0];
       var setLoading = loadingState[1];
+      var pickerOpenState = useState(false);
+      var pickerOpen = pickerOpenState[0];
+      var setPickerOpen = pickerOpenState[1];
       var pollRef = useRef(null);
 
       var loadTemplates = useCallback(function () {
@@ -282,6 +424,42 @@
         var next = (rootDraft || "").trim();
         setRoot(next);
         storeRoot(next);
+      }
+
+      function pickNativeDirectory() {
+        var desktop = window.hermesDesktop;
+        if (!desktop || typeof desktop.selectPaths !== "function") {
+          return Promise.resolve(null);
+        }
+        return desktop
+          .selectPaths({
+            directories: true,
+            multiple: false,
+            defaultPath: rootDraft || root || undefined,
+          })
+          .then(function (paths) {
+            if (Array.isArray(paths) && paths[0]) return String(paths[0]);
+            return null;
+          })
+          .catch(function () {
+            return null;
+          });
+      }
+
+      function onBrowseRoot() {
+        var desktop = window.hermesDesktop;
+        if (desktop && typeof desktop.selectPaths === "function") {
+          pickNativeDirectory().then(function (dir) {
+            if (dir) {
+              setRootDraft(dir);
+              setRoot(dir);
+              storeRoot(dir);
+            }
+            // cancel → no-op (do not open fallback over native cancel)
+          });
+          return;
+        }
+        setPickerOpen(true);
       }
 
       function runAction(label, method, path, body) {
@@ -333,8 +511,27 @@
                     if (e.key === "Enter") applyRoot();
                   },
                 }),
+                h(Button, {
+                  size: "sm",
+                  variant: "outline",
+                  type: "button",
+                  onClick: onBrowseRoot,
+                  title: "Browse for a project folder",
+                }, "Browse"),
                 h(Button, { size: "sm", variant: "secondary", onClick: applyRoot }, "Set")
-              )
+              ),
+              pickerOpen
+                ? h(DirectoryPicker, {
+                    initialPath: rootDraft || root || "",
+                    onCancel: function () { setPickerOpen(false); },
+                    onSelect: function (path) {
+                      setRootDraft(path);
+                      setRoot(path);
+                      storeRoot(path);
+                      setPickerOpen(false);
+                    },
+                  })
+                : null
             ),
             h(Button, {
               size: "sm",

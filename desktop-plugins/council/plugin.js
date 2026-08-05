@@ -51,6 +51,32 @@ function useRest(ctx) {
   )
 }
 
+/** Native folder picker when running inside Hermes Desktop; null if cancelled/unavailable. */
+async function pickDirectory(defaultPath) {
+  try {
+    const desktop =
+      typeof window !== 'undefined' ? window.hermesDesktop : undefined
+    if (!desktop || typeof desktop.selectPaths !== 'function') {
+      return null
+    }
+    const paths = await desktop.selectPaths({
+      directories: true,
+      multiple: false,
+      defaultPath: defaultPath || undefined
+    })
+    if (Array.isArray(paths) && paths[0]) {
+      return String(paths[0])
+    }
+  } catch (err) {
+    try {
+      host.notifyError?.(err, 'Could not open folder picker')
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  return null
+}
+
 function statusTone(status) {
   if (!status) return 'text-(--ui-text-quaternary)'
   if (status === 'awaiting_user' || status === 'awaiting_round') return 'text-(--ui-accent)'
@@ -657,11 +683,53 @@ function CouncilPage({ ctx }) {
             children: [
               jsx(Tip, {
                 label: 'Project root containing .council/',
-                children: jsx(Input, {
-                  className: 'h-8 w-[min(360px,40vw)] text-xs',
-                  value: root,
-                  placeholder: 'Project root',
-                  onChange: e => setRoot(e.target.value)
+                children: jsxs('div', {
+                  className: 'flex items-center gap-1',
+                  children: [
+                    jsx(Input, {
+                      className: 'h-8 w-[min(320px,36vw)] text-xs font-mono',
+                      value: root,
+                      placeholder: 'Project root',
+                      onChange: e => setRoot(e.target.value)
+                    }),
+                    jsx(Button, {
+                      size: 'sm',
+                      variant: 'secondary',
+                      type: 'button',
+                      title: 'Browse for project folder',
+                      onClick: () => {
+                        void (async () => {
+                          const dir = await pickDirectory(root || cwd || undefined)
+                          if (dir) {
+                            setRoot(dir)
+                            haptic('tap')
+                            host.notify?.({
+                              kind: 'info',
+                              message: `Council project root: ${dir}`
+                            })
+                          } else if (
+                            typeof window !== 'undefined' &&
+                            !(window.hermesDesktop && window.hermesDesktop.selectPaths)
+                          ) {
+                            host.notify?.({
+                              kind: 'warning',
+                              message:
+                                'Folder picker needs Hermes Desktop. Type an absolute path, or use the active workspace cwd.'
+                            })
+                          }
+                        })()
+                      },
+                      children: jsxs('span', {
+                        className: 'inline-flex items-center gap-1',
+                        children: [
+                          icons.FolderOpen
+                            ? jsx(icons.FolderOpen, { className: 'h-3.5 w-3.5' })
+                            : null,
+                          'Browse'
+                        ]
+                      })
+                    })
+                  ]
                 })
               }),
               jsx('select', {

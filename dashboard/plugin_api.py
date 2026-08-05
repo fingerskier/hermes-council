@@ -128,6 +128,63 @@ async def health():
     return {"ok": True, "plugin": "council", "root": str(PLUGIN_ROOT)}
 
 
+@router.get("/browse")
+async def browse(path: Optional[str] = None):
+    """List subdirectories for the dashboard folder picker.
+
+    Returns the resolved path, its parent (if any), whether ``.council/``
+    exists here, and child directory names (non-hidden first).
+    """
+    try:
+        if path and str(path).strip():
+            p = Path(path).expanduser().resolve()
+        else:
+            p = Path.home().resolve()
+        if not p.exists():
+            raise HTTPException(status_code=400, detail=f"path does not exist: {p}")
+        if not p.is_dir():
+            raise HTTPException(status_code=400, detail=f"not a directory: {p}")
+
+        # Soft sandbox: stay under home or common project roots; still allow
+        # absolute navigation the user types (picker is opt-in).
+        children: List[Dict[str, Any]] = []
+        try:
+            entries = sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=f"permission denied: {p}") from exc
+
+        for ent in entries:
+            if not ent.is_dir():
+                continue
+            name = ent.name
+            if name.startswith(".") and name not in {".council"}:
+                continue
+            children.append(
+                {
+                    "name": name,
+                    "path": str(ent.resolve()),
+                    "has_council": (ent / ".council").is_dir(),
+                }
+            )
+
+        parent = None
+        if p.parent != p:
+            parent = str(p.parent)
+
+        return {
+            "ok": True,
+            "path": str(p),
+            "parent": parent,
+            "has_council": (p / ".council").is_dir(),
+            "children": children[:500],
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("browse failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.get("/templates")
 async def templates():
     try:
